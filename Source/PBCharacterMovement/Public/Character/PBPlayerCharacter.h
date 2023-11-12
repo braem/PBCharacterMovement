@@ -24,19 +24,19 @@ class PBCHARACTERMOVEMENT_API APBPlayerCharacter : public ACharacter
 	GENERATED_BODY()
 
 public:
-	void Tick(float DeltaTime) override;
+	virtual void Tick(float DeltaTime) override;
 	virtual void ClearJumpInput(float DeltaTime) override;
-	void Jump() override;
+	virtual void Jump() override;
 	virtual void StopJumping() override;
 	virtual void OnJumped_Implementation() override;
 	virtual bool CanJumpInternal_Implementation() const override;
 
-	void RecalculateBaseEyeHeight() override;
+	virtual void RecalculateBaseEyeHeight() override;
 
 	/* Triggered when player's movement mode has changed */
-	void OnMovementModeChanged(EMovementMode PrevMovementMode, uint8 PrevCustomMode) override;
+	virtual void OnMovementModeChanged(EMovementMode PrevMovementMode, uint8 PrevCustomMode) override;
 
-	float GetLastJumpTime()
+	[[nodiscard]] float GetLastJumpTime() const
 	{
 		return LastJumpTime;
 	}
@@ -44,28 +44,28 @@ public:
 private:
 
 	/** cached default eye height */
-	float DefaultBaseEyeHeight;
+	float DefaultBaseEyeHeight{ 0.f };
 
 	/** when we last jumped */
-	float LastJumpTime;
+	float LastJumpTime{ 0.f };
 
 	/** throttle jump boost when going up a ramp, so we don't spam it */
-	float LastJumpBoostTime;
+	float LastJumpBoostTime{ 0.f };
 
 	/** maximum time it takes to jump */
-	float MaxJumpTime;
+	float MaxJumpTime{ 0.f };
 
 	/** Base turn rate, in deg/sec. Other scaling may affect final turn rate. */
 	UPROPERTY(VisibleAnywhere, meta = (AllowPrivateAccess = "true"), Category = "PB Player|Camera")
-	float BaseTurnRate;
+	float BaseTurnRate{ 0.f };
 
 	/** Base look up/down rate, in deg/sec. Other scaling may affect final rate.*/
 	UPROPERTY(VisibleAnywhere, meta = (AllowPrivateAccess = "true"), Category = "PB Player|Camera")
-	float BaseLookUpRate;
+	float BaseLookUpRate{ 0.f };
 
 	/** Automatic bunnyhopping */
 	UPROPERTY(EditAnywhere, meta = (AllowPrivateAccess = "true"), Category = "PB Player|Gameplay")
-	bool bAutoBunnyhop;
+	bool bAutoBunnyhop{ false };
 
 	/** Move step sounds by physical surface */
 	UPROPERTY(EditDefaultsOnly, meta = (AllowPrivateAccess = "true"), Category = "PB Player|Sounds")
@@ -73,108 +73,118 @@ private:
 
 		/** Minimum speed to play the camera shake for landing */
 	UPROPERTY(EditDefaultsOnly, meta = (AllowPrivateAccess = "true"), Category = "PB Player|Damage")
-	float MinLandBounceSpeed;
+	double MinLandBounceSpeed{ 0.f };
 
 	/** Don't take damage below this speed - so jumping doesn't damage */
 	UPROPERTY(EditDefaultsOnly, meta = (AllowPrivateAccess = "true"), Category = "PB Player|Damage")
-	float MinSpeedForFallDamage;
+	double MinSpeedForFallDamage{ 0. };
 
 	// In HL2, the player has the Z component for applying momentum to the capsule capped
 	UPROPERTY(EditDefaultsOnly, meta = (AllowPrivateAccess = "true"), Category = "PB Player|Damage")
-	float CapDamageMomentumZ = 0.f;
+	double CapDamageMomentumZ{ 0. };
 
 	/** Pointer to player movement component */
-	UPBPlayerMovement* MovementPtr;
+	TWeakObjectPtr<UPBPlayerMovement> MovementPtr;
 
 	/** True if we're sprinting*/
-	bool bIsSprinting;
+	bool bIsSprinting{ false };
 
-	bool bWantsToWalk;
+	bool bWantsToWalk{ false };
 
 	/** defer the jump stop for a frame (for early jumps) */
-	bool bDeferJumpStop;
+	bool bDeferJumpStop{ false };
 
 	virtual void ApplyDamageMomentum(float DamageTaken, FDamageEvent const& DamageEvent, APawn* PawnInstigator, AActor* DamageCauser) override;
 
 protected:
-	virtual void BeginPlay();
+	virtual void BeginPlay() override;
+	
 public:
 	APBPlayerCharacter(const FObjectInitializer& ObjectInitializer);
 
-#pragma region Mutators
 	UFUNCTION()
 	bool IsSprinting() const
 	{
 		return bIsSprinting;
 	}
+	
 	UFUNCTION()
 	bool DoesWantToWalk() const
 	{
 		return bWantsToWalk;
 	}
-	FORCEINLINE TSubclassOf<UPBMoveStepSound>* GetMoveStepSound(TEnumAsByte<EPhysicalSurface> Surface)
+	
+	[[nodiscard]] FORCEINLINE TSubclassOf<UPBMoveStepSound>* GetMoveStepSound(TEnumAsByte<EPhysicalSurface> Surface)
 	{
 		return MoveStepSounds.Find(Surface);
-	};
-	UFUNCTION(Category = "PB Getters", BlueprintPure) FORCEINLINE float GetBaseTurnRate() const
+	}
+	
+	UFUNCTION(Category = "PB Getters", BlueprintPure)
+	FORCEINLINE float GetBaseTurnRate() const
 	{
 		return BaseTurnRate;
-	};
-	UFUNCTION(Category = "PB Setters", BlueprintCallable) void SetBaseTurnRate(float val)
+	}
+
+	UFUNCTION(Category = "PB Setters", BlueprintCallable)
+	void SetBaseTurnRate(const float Val)
 	{
-		BaseTurnRate = val;
-	};
-	UFUNCTION(Category = "PB Getters", BlueprintPure) FORCEINLINE float GetBaseLookUpRate() const
+		BaseTurnRate = Val;
+	}
+	
+	UFUNCTION(Category = "PB Getters", BlueprintPure)
+	FORCEINLINE float GetBaseLookUpRate() const
 	{
 		return BaseLookUpRate;
-	};
-	UFUNCTION(Category = "PB Setters", BlueprintCallable) void SetBaseLookUpRate(float val)
-	{
-		BaseLookUpRate = val;
-	};
-	UFUNCTION(Category = "PB Getters", BlueprintPure) FORCEINLINE bool GetAutoBunnyhop() const
+	}
+	
+	UFUNCTION(Category = "PB Setters", BlueprintCallable)
+	void SetBaseLookUpRate(const float Val);
+
+	UFUNCTION(Category = "PB Getters", BlueprintPure)
+	FORCEINLINE bool GetAutoBunnyhop() const
 	{
 		return bAutoBunnyhop;
-	};
-	UFUNCTION(Category = "PB Setters", BlueprintCallable) void SetAutoBunnyhop(bool val)
+	}
+	
+	UFUNCTION(Category = "PB Setters", BlueprintCallable)
+	void SetAutoBunnyhop(const bool bVal)
 	{
-		bAutoBunnyhop = val;
-	};
-	UFUNCTION(Category = "PB Getters", BlueprintPure) FORCEINLINE UPBPlayerMovement* GetMovementPtr() const
+		bAutoBunnyhop = bVal;
+	}
+	
+	UFUNCTION(Category = "PB Getters", BlueprintPure)
+	FORCEINLINE UPBPlayerMovement* GetMovementPtr() const
 	{
-		return MovementPtr;
-	};
-
-#pragma endregion Mutators
+		return MovementPtr.Get();
+	}
 
 	float GetDefaultBaseEyeHeight() const { return DefaultBaseEyeHeight; }
 
 	UFUNCTION()
-	void ToggleNoClip();
+	void ToggleNoClip() const;
 
 	UFUNCTION(Category = "Player Movement", BlueprintPure)
-	float GetMinSpeedForFallDamage() const { return MinSpeedForFallDamage; };
+	double GetMinSpeedForFallDamage() const { return MinSpeedForFallDamage; };
 
-	float GetMinLandBounceSpeed() const { return MinLandBounceSpeed; }
+	[[nodiscard]] double GetMinLandBounceSpeed() const { return MinLandBounceSpeed; }
 
-	/** Handles stafing movement, left and right */
-	UFUNCTION()
-	void Move(FVector Direction, float Value);
+	/** Handles strafing movement, left and right */
+	void Move(const FVector& Direction, float Value);
 
 	/**
 	 * Called via input to turn at a given rate.
+	 * @param bIsPure	If true, rate will pass through without delta applied to it
 	 * @param Rate	This is a normalized rate, i.e. 1.0 means 100% of desired
 	 * turn rate
 	 */
-	UFUNCTION()
 	void Turn(bool bIsPure, float Rate);
 
 	/**
 	 * Called via input to turn look up/down at a given rate.
+	 * @param bIsPure	If true, rate will pass through without delta applied to it
 	 * @param Rate	This is a normalized rate, i.e. 1.0 means 100% of desired
 	 * turn rate
 	 */
-	UFUNCTION()
 	void LookUp(bool bIsPure, float Rate);
 
 	virtual bool CanCrouch() const override;

@@ -10,14 +10,7 @@
 
 #include "PBPlayerMovement.generated.h"
 
-#define LADDER_MOUNT_TIMEOUT 0.2f
-
-// Crouch Timings (in seconds)
-#define MOVEMENT_DEFAULT_CROUCHTIME 0.4f
-#define MOVEMENT_DEFAULT_CROUCHJUMPTIME 0.0f
-#define MOVEMENT_DEFAULT_UNCROUCHTIME 0.2f
-#define MOVEMENT_DEFAULT_UNCROUCHJUMPTIME 0.8f
-
+class APBPlayerCharacter;
 class USoundCue;
 
 UCLASS()
@@ -28,139 +21,140 @@ class PBCHARACTERMOVEMENT_API UPBPlayerMovement : public UCharacterMovementCompo
 protected:
 	/** If the player is using a ladder */
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = Gameplay)
-	bool bOnLadder;
+	bool bOnLadder{ false };
 
 	/** Milliseconds between step sounds */
-	float MoveSoundTime;
+	float MoveSoundTime{ 0.f };
 
 	/** If we are stepping left, else, right */
-	bool StepSide;
+	bool StepSide{ false };
 
 	/** The multiplier for acceleration when on ground. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Walking")
-	float GroundAccelerationMultiplier;
+	double GroundAccelerationMultiplier{ 0. };
 
 	/** The multiplier for acceleration when in air. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Walking")
-	float AirAccelerationMultiplier;
+	double AirAccelerationMultiplier{ 0. };
 	
 	/* The vector differential magnitude cap when in air. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Jumping / Falling")
-	float AirSpeedCap;
+	double AirSpeedCap{ 0. };
 
 	/** Time to crouch on ground in seconds */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Walking")
-	float CrouchTime;
+	float CrouchTime{ 0.f };
 
 	/** Time to uncrouch on ground in seconds */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Walking")
-	float UncrouchTime;
+	float UncrouchTime{ 0.f };
 
 	/** Time to crouch in air in seconds */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Walking")
-	float CrouchJumpTime;
+	float CrouchJumpTime{ 0.f };
 
 	/** Time to uncrouch in air in seconds */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Walking")
-	float UncrouchJumpTime;
+	float UncrouchJumpTime{ 0.f };
 
 	/** the minimum step height from moving fast */
 	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite)
-	float MinStepHeight;
+	double MinStepHeight{ 0. };
 
 	/** Time (in millis) the player has to rejump without applying friction. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Jumping / Falling", meta=(DisplayName="Rejump Window", ForceUnits="ms"))
-	float BrakingWindow;
+	float BrakingWindow{ 0.f };
 
 	/* Progress checked against the Braking Window, incremented in millis. */
-	float BrakingWindowTimeElapsed;
+	float BrakingWindowTimeElapsed{ 0.f };
 
 	/** If the player has been on the ground past the Braking Window, start braking. */
-	bool bBrakingWindowElapsed;
+	bool bBrakingWindowElapsed{ false };
 
 	/** Wait a frame before crouch speed. */
-	bool bCrouchFrameTolerated = false;
+	bool bCrouchFrameTolerated{ false };
 
 	/** If in the crouching transition */
-	bool bIsInCrouchTransition = false;
+	bool bIsInCrouchTransition{ false };
 
 	/** If in the crouching transition */
-	bool bInCrouch;
+	bool bInCrouch{ false };
 
 	/** The PB player character */
-	class APBPlayerCharacter* PBCharacter;
+	TWeakObjectPtr<APBPlayerCharacter> PBCharacter;
 
 	/** The target ground speed when running. */
 	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
-	float RunSpeed;
+	double RunSpeed{ 0. };
 
 	/** The target ground speed when sprinting.  */
 	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
-	float SprintSpeed;
+	double SprintSpeed{ 0. };
 
 	/** The target ground speed when walking slowly. */
 	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
-	float WalkSpeed;
+	double WalkSpeed{ 0. };
 
 	/** Speed on a ladder */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Ladder")
-	float LadderSpeed;
+	double LadderSpeed{ 0. };
 
 	/** The minimum speed to scale up from for slope movement  */
 	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
-	float SpeedMultMin;
+	double SpeedMultMin{ 0. };
 
 	/** The maximum speed to scale up to for slope movement */
 	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
-	float SpeedMultMax;
+	double SpeedMultMax{ 0. };
 
 	/** The maximum angle we can roll for camera adjust */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)")
-	float RollAngle = 0.0f;
+	double RollAngle{ 0. };
 
 	/** Speed of rolling the camera */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)")
-	float RollSpeed = 0.0f;
+	double RollSpeed{ 0. };
 
 	/** Speed of rolling the camera */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)")
-	float BounceMultiplier = 0.0f;
+	double BounceMultiplier{ 0. };
 
 	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
-	float AxisSpeedLimit = 6667.5f;
+	double AxisSpeedLimit{ 6667.5 };
 
 	/** Threshold relating to speed ratio and friction which causes us to catch air */
 	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
-	float SlideLimit = 0.5f;
+	float SlideLimit{ 0.5f };
 
 	/** Fraction of uncrouch half-height to check for before doing starting an uncrouch. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)")
-	float GroundUncrouchCheckFactor = 0.75f;
+	float GroundUncrouchCheckFactor{ 0.75f };
 
-	bool bShouldPlayMoveSounds = true;
+	bool bShouldPlayMoveSounds{ true };
 
 public:
 	/** Print pos and vel (Source: cl_showpos) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)")
-	uint32 bShowPos : 1;
+	uint8 bShowPos : 1 { false };
 
 	UPBPlayerMovement();
 
 	virtual void InitializeComponent() override;
-	void OnRegister() override;
+	virtual void OnRegister() override;
 
 	// Overrides for Source-like movement
-	void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	virtual void CalcVelocity(float DeltaTime, float Friction, bool bFluid, float BrakingDeceleration) override;
 	virtual void ApplyVelocityBraking(float DeltaTime, float Friction, float BrakingDeceleration) override;
-	void PhysFalling(float deltaTime, int32 Iterations);
-	bool ShouldLimitAirControl(float DeltaTime, const FVector& FallAcceleration) const override;
-	FVector NewFallVelocity(const FVector& InitialVelocity, const FVector& Gravity, float DeltaTime) const override;
+	virtual void PhysFalling(float DeltaTime, int32 Iterations) override;
+	virtual bool ShouldLimitAirControl(float DeltaTime, const FVector& FallAcceleration) const override;
+	virtual FVector NewFallVelocity(const FVector& InitialVelocity, const FVector& Gravity, float DeltaTime) const override;
 
-	void UpdateCharacterStateBeforeMovement(float DeltaSeconds) override;
-	void UpdateCharacterStateAfterMovement(float DeltaSeconds) override;
+	virtual void UpdateCharacterStateBeforeMovement(float DeltaSeconds) override;
+	virtual void UpdateCharacterStateAfterMovement(float DeltaSeconds) override;
 
 	void UpdateSurfaceFriction(bool bIsSliding = false);
+	// Crouch transition but not in noclip
 	void UpdateCrouching(float DeltaTime, bool bOnlyUnCrouch = false);
 
 	// Overrides for crouch transitions
@@ -168,23 +162,23 @@ public:
 	virtual void UnCrouch(bool bClientSimulation = false) override;
 	virtual void DoCrouchResize(float TargetTime, float DeltaTime, bool bClientSimulation = false);
 	virtual void DoUnCrouchResize(float TargetTime, float DeltaTime, bool bClientSimulation = false);
-	
-	bool MoveUpdatedComponentImpl(const FVector& Delta, const FQuat& NewRotation, bool bSweep, FHitResult* OutHit = nullptr, ETeleportType Teleport = ETeleportType::None) override;
+
+	virtual bool MoveUpdatedComponentImpl(const FVector& Delta, const FQuat& NewRotation, bool bSweep, FHitResult* OutHit = nullptr, ETeleportType Teleport = ETeleportType::None) override;
 
 	// Jump overrides
-	bool CanAttemptJump() const override;
-	bool DoJump(bool bClientSimulation) override;
+	virtual bool CanAttemptJump() const override;
+	virtual bool DoJump(bool bClientSimulation) override;
 
-	void TwoWallAdjust(FVector& OutDelta, const FHitResult& Hit, const FVector& OldHitNormal) const override;
-	float SlideAlongSurface(const FVector& Delta, float Time, const FVector& Normal, FHitResult& Hit, bool bHandleImpact = false) override;
-	FVector ComputeSlideVector(const FVector& Delta, const float Time, const FVector& Normal, const FHitResult& Hit) const override;
-	FVector HandleSlopeBoosting(const FVector& SlideResult, const FVector& Delta, const float Time, const FVector& Normal, const FHitResult& Hit) const override;
-	bool ShouldCatchAir(const FFindFloorResult& OldFloor, const FFindFloorResult& NewFloor) override;
-	bool IsWithinEdgeTolerance(const FVector& CapsuleLocation, const FVector& TestImpactPoint, const float CapsuleRadius) const override;
-	bool IsValidLandingSpot(const FVector& CapsuleLocation, const FHitResult& Hit) const override;
-	bool ShouldCheckForValidLandingSpot(float DeltaTime, const FVector& Delta, const FHitResult& Hit) const override;
+	virtual void TwoWallAdjust(FVector& OutDelta, const FHitResult& Hit, const FVector& OldHitNormal) const override;
+	virtual float SlideAlongSurface(const FVector& Delta, float Time, const FVector& Normal, FHitResult& Hit, bool bHandleImpact = false) override;
+	virtual FVector ComputeSlideVector(const FVector& Delta, const float Time, const FVector& Normal, const FHitResult& Hit) const override;
+	virtual FVector HandleSlopeBoosting(const FVector& SlideResult, const FVector& Delta, const float Time, const FVector& Normal, const FHitResult& Hit) const override;
+	virtual bool ShouldCatchAir(const FFindFloorResult& OldFloor, const FFindFloorResult& NewFloor) override;
+	virtual bool IsWithinEdgeTolerance(const FVector& CapsuleLocation, const FVector& TestImpactPoint, const float CapsuleRadius) const override;
+	virtual bool IsValidLandingSpot(const FVector& CapsuleLocation, const FHitResult& Hit) const override;
+	virtual bool ShouldCheckForValidLandingSpot(float DeltaTime, const FVector& Delta, const FHitResult& Hit) const override;
 
-	void TraceCharacterFloor(FHitResult& OutHit);
+	void TraceCharacterFloor(FHitResult& OutHit) const;
 
 	// Acceleration
 	FORCEINLINE FVector GetAcceleration() const
@@ -199,22 +193,22 @@ public:
 		return bOnLadder;
 	}
 
-	virtual void OnMovementModeChanged(EMovementMode PreviousMovementMode, uint8 PreviousCustomMode);
+	virtual void OnMovementModeChanged(EMovementMode PreviousMovementMode, uint8 PreviousCustomMode) override;
 
 	/** Do camera roll effect based on velocity */
-	float GetCameraRoll();
+	double GetCameraRoll() const;
 
 	void SetNoClip(bool bNoClip);
 
 	/** Toggle no clip */
 	void ToggleNoClip();
 
-	bool IsBrakingWindowTolerated() const
+	[[nodiscard]] bool IsBrakingWindowTolerated() const
 	{
 		return bBrakingWindowElapsed;
 	}
 
-	bool IsInCrouch() const
+	[[nodiscard]] bool IsInCrouch() const
 	{
 		return bInCrouch;
 	}
@@ -227,16 +221,15 @@ private:
 
 	class UPBMoveStepSound* GetMoveStepSoundBySurface(EPhysicalSurface SurfaceType) const;
 
-
 	virtual void PlayJumpSound(const FHitResult& Hit, bool bJumped);
 
-	float DefaultStepHeight;
-	float DefaultWalkableFloorZ;
-	float SurfaceFriction;
+	double DefaultStepHeight{ 0. };
+	double DefaultWalkableFloorZ{ 0. };
+	float SurfaceFriction{ 0.f };
 
 	/** The time that the player can remount on the ladder */
-	float OffLadderTicks = -1.0f;
+	float OffLadderTicks{ -1.0f };
 
-	bool bHasDeferredMovementMode;
-	EMovementMode DeferredMovementMode;
+	bool bHasDeferredMovementMode{ false };
+	EMovementMode DeferredMovementMode{ MOVE_None };
 };

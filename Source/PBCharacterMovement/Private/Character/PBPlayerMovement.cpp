@@ -22,12 +22,37 @@ DECLARE_CYCLE_STAT(TEXT("Char StepUp"), STAT_CharStepUp, STATGROUP_Character);
 DECLARE_CYCLE_STAT(TEXT("Char PhysFalling"), STAT_CharPhysFalling, STATGROUP_Character);
 
 // MAGIC NUMBERS
-constexpr float JumpVelocity = 266.7f;
-const float MAX_STEP_SIDE_Z = 0.08f;			 // maximum z value for the normal on the vertical side of steps
-const float VERTICAL_SLOPE_NORMAL_Z = 0.001f;	 // Slope is vertical if Abs(Normal.Z) <= this threshold. Accounts for precision problems that sometimes angle
-												 // normals slightly off horizontal for vertical surface.
+namespace PlayerMovementConstants
+{
+	constexpr float LadderMountTimeout{ 0.2f };
 
-constexpr float DesiredGravity = -1143.0f;
+	// Crouch Timings (in seconds)
+	constexpr double DefaultCrouchTime{ 0.4 };
+	constexpr double DefaultCrouchJumpTime{ 0. };
+	constexpr double DefaultUncrouchTime{ 0.2 };
+	constexpr double DefaultUncrouchJumpTime{ 0.8 };
+	
+	constexpr double JumpVelocity{ 266.7 };
+	constexpr float DesiredGravity{ -1143.0f };
+
+	/**
+	 * Slope is vertical if Abs(Normal.Z) <= this threshold. Accounts for precision problems that sometimes angle
+	 * normals slightly off horizontal for vertical surface.
+	 */
+	constexpr double VerticalSlopeNormalZ{ 0.001 };
+}
+
+namespace PlayerMovementPrivate
+{
+	static float GetFrictionFromHit(const FHitResult& Hit)
+	{
+		if (Hit.PhysMaterial.IsValid())
+		{
+			return FMath::Min(1.f, Hit.PhysMaterial->Friction * 1.25f);
+		}
+		return 1.f;
+	}
+}
 
 // Purpose: override default player movement
 UPBPlayerMovement::UPBPlayerMovement()
@@ -41,15 +66,15 @@ UPBPlayerMovement::UPBPlayerMovement()
 	// HL2 cl_(forward & side)speed = 450Hu
 	MaxAcceleration = 857.25f;
 	// Set the default walk speed
-	WalkSpeed = 285.75f;
-	RunSpeed = 361.9f;
-	SprintSpeed = 609.6f;
-	MaxWalkSpeed = RunSpeed;
+	WalkSpeed = 285.75;
+	RunSpeed = 361.9;
+	SprintSpeed = 609.6;
+	MaxWalkSpeed = static_cast<float>(RunSpeed);
 	// Acceleration multipliers (HL2's sv_accelerate and sv_airaccelerate)
-	GroundAccelerationMultiplier = 10.0f;
-	AirAccelerationMultiplier = 10.0f;
+	GroundAccelerationMultiplier = 10.;
+	AirAccelerationMultiplier = 10.;
 	// 30 air speed cap from HL2
-	AirSpeedCap = 57.15f;
+	AirSpeedCap = 57.15;
 	// HL2 like friction
 	// sv_friction
 	GroundFriction = 4.0f;
@@ -71,9 +96,9 @@ UPBPlayerMovement::UPBPlayerMovement()
 	BrakingDecelerationWalking = 190.5f;
 	// HL2 step height
 	MaxStepHeight = 34.29f;
-	DefaultStepHeight = MaxStepHeight;
+	DefaultStepHeight = static_cast<double>(MaxStepHeight);
 	// Step height scaling due to speed
-	MinStepHeight = 10.0f;
+	MinStepHeight = 10.;
 	// Jump z from HL2's 160Hu
 	// 21Hu jump height
 	// 510ms jump time
@@ -84,27 +109,27 @@ UPBPlayerMovement::UPBPlayerMovement()
 	bShowPos = false;
 	// We aren't on a ladder at first
 	bOnLadder = false;
-	OffLadderTicks = LADDER_MOUNT_TIMEOUT;
-	LadderSpeed = 381.0f;
+	OffLadderTicks = PlayerMovementConstants::LadderMountTimeout;
+	LadderSpeed = 381.;
 	// Speed multiplier bounds
-	SpeedMultMin = SprintSpeed * 1.7f;
-	SpeedMultMax = SprintSpeed * 2.5f;
+	SpeedMultMin = SprintSpeed * 1.7;
+	SpeedMultMax = SprintSpeed * 2.5;
 	// Start out braking
 	bBrakingWindowElapsed = true;
 	BrakingWindowTimeElapsed = 0.f;
 	BrakingWindow = 15.f;
 	// Crouching
-	CrouchedHalfHeight = 34.29f;
-	MaxWalkSpeedCrouched = RunSpeed * 0.33333333f;
+	SetCrouchedHalfHeight(34.29f);
+	MaxWalkSpeedCrouched = static_cast<float>(RunSpeed * (1. / 3.));
 	bCanWalkOffLedgesWhenCrouching = true;
-	CrouchTime = MOVEMENT_DEFAULT_CROUCHTIME;
-	UncrouchTime = MOVEMENT_DEFAULT_UNCROUCHTIME;
-	CrouchJumpTime = MOVEMENT_DEFAULT_CROUCHJUMPTIME;
-	UncrouchJumpTime = MOVEMENT_DEFAULT_UNCROUCHJUMPTIME;
+	CrouchTime = PlayerMovementConstants::DefaultCrouchTime;
+	UncrouchTime = PlayerMovementConstants::DefaultUncrouchTime;
+	CrouchJumpTime = PlayerMovementConstants::DefaultCrouchJumpTime;
+	UncrouchJumpTime = PlayerMovementConstants::DefaultUncrouchJumpTime;
 	// Slope angle is 45.57 degrees
 	SetWalkableFloorZ(0.7f);
 	DefaultWalkableFloorZ = GetWalkableFloorZ();
-	AxisSpeedLimit = 6667.5f;
+	AxisSpeedLimit = 6667.5;
 	// Tune physics interactions
 	StandingDownwardForceScale = 1.0f;
 	// Reasonable values polled from NASA (https://msis.jsc.nasa.gov/sections/section04.htm#Figure%204.9.3-6)
@@ -135,7 +160,7 @@ UPBPlayerMovement::UPBPlayerMovement()
 	NavAgentProps.bCanJump = true;
 	NavAgentProps.bCanFly = true;
 	// Make sure gravity is correct for player movement
-	GravityScale = DesiredGravity / UPhysicsSettings::Get()->DefaultGravityZ;
+	GravityScale = PlayerMovementConstants::DesiredGravity / UPhysicsSettings::Get()->DefaultGravityZ;
 	// Make sure ramp movement in correct
 	bMaintainHorizontalGroundVelocity = true;
 }
@@ -143,14 +168,16 @@ UPBPlayerMovement::UPBPlayerMovement()
 void UPBPlayerMovement::InitializeComponent()
 {
 	Super::InitializeComponent();
-	PBCharacter = Cast<APBPlayerCharacter>(GetOwner());
+	
+	PBCharacter = GetOwner<APBPlayerCharacter>();
+	check(PBCharacter.IsValid());
 }
 
 void UPBPlayerMovement::OnRegister()
 {
 	Super::OnRegister();
 
-	const bool bIsReplay = (GetWorld() && GetWorld()->IsPlayingReplay());
+	const bool bIsReplay = GetWorld() && GetWorld()->IsPlayingReplay();
 	if (!bIsReplay && GetNetMode() == NM_ListenServer)
 	{
 		NetworkSmoothingMode = ENetworkSmoothingMode::Linear;
@@ -181,7 +208,7 @@ void UPBPlayerMovement::TickComponent(float DeltaTime, enum ELevelTick TickType,
 		GEngine->AddOnScreenDebugMessage(3, 1.0f, FColor::Green, FString::Printf(TEXT("vel: %f"), Velocity.Size()));
 	}
 
-	if (RollAngle != 0 && RollSpeed != 0 && PBCharacter->GetController())
+	if (RollAngle != 0. && RollSpeed != 0. && PBCharacter->GetController())
 	{
 		FRotator ControlRotation = PBCharacter->GetController()->GetControlRotation();
 		ControlRotation.Roll = GetCameraRoll();
@@ -233,16 +260,6 @@ bool UPBPlayerMovement::DoJump(bool bClientSimulation)
 	return false;
 }
 
-float GetFrictionFromHit(const FHitResult& Hit)
-{
-	float SurfaceFriction = 1.0f;
-	if (Hit.PhysMaterial.IsValid())
-	{
-		SurfaceFriction = FMath::Min(1.0f, Hit.PhysMaterial->Friction * 1.25f);
-	}
-	return SurfaceFriction;
-}
-
 void UPBPlayerMovement::TwoWallAdjust(FVector& Delta, const FHitResult& Hit, const FVector& OldHitNormal) const
 {
 	Super::TwoWallAdjust(Delta, Hit, OldHitNormal);
@@ -267,7 +284,7 @@ FVector UPBPlayerMovement::HandleSlopeBoosting(const FVector& SlideResult, const
 	const float WallAngle = FMath::Abs(Hit.ImpactNormal.Z);
 	FVector ImpactNormal;
 	// If too extreme, use the more stable hit normal
-	if (WallAngle <= VERTICAL_SLOPE_NORMAL_Z || WallAngle == 1.0f)
+	if (WallAngle <= PlayerMovementConstants::VerticalSlopeNormalZ || WallAngle == 1.0f)
 	{
 		ImpactNormal = Normal;
 	}
@@ -279,14 +296,14 @@ FVector UPBPlayerMovement::HandleSlopeBoosting(const FVector& SlideResult, const
 	{
 		ImpactNormal = ConstrainNormalToPlane(ImpactNormal);
 	}
-	const float BounceCoefficient = 1.0f + BounceMultiplier * (1.0f - SurfaceFriction);
-	return (Delta - BounceCoefficient * Delta.ProjectOnToNormal(ImpactNormal)) * Time;
+	const double BounceCoefficient = 1. + BounceMultiplier * (1. - static_cast<double>(SurfaceFriction));
+	return (Delta - BounceCoefficient * Delta.ProjectOnToNormal(ImpactNormal)) * static_cast<double>(Time);
 }
 
 bool UPBPlayerMovement::ShouldCatchAir(const FFindFloorResult& OldFloor, const FFindFloorResult& NewFloor)
 {
 	// Get surface friction
-	const float OldSurfaceFriction = GetFrictionFromHit(OldFloor.HitResult);
+	const float OldSurfaceFriction = PlayerMovementPrivate::GetFrictionFromHit(OldFloor.HitResult);
 
 	// As we get faster, make our speed multiplier smaller (so it scales with smaller friction)
 	const float SpeedMult = SpeedMultMax / Velocity.Size2D();
@@ -397,7 +414,7 @@ bool UPBPlayerMovement::IsValidLandingSpot(const FVector& CapsuleLocation, const
 		DeflectionVector = ComputeSlideVector(DeflectionVector, 1.0f, Hit.Normal, Hit);
 
 		// going up too fast to land
-		if (DeflectionVector.Z > JumpVelocity)
+		if (DeflectionVector.Z > PlayerMovementConstants::JumpVelocity)
 		{
 			return false;
 		}
@@ -405,7 +422,7 @@ bool UPBPlayerMovement::IsValidLandingSpot(const FVector& CapsuleLocation, const
 	return true;
 }
 
-void UPBPlayerMovement::TraceCharacterFloor(FHitResult& OutHit)
+void UPBPlayerMovement::TraceCharacterFloor(FHitResult& OutHit) const
 {
 	FCollisionQueryParams CapsuleParams(SCENE_QUERY_STAT(CharacterFloorTrace), false, CharacterOwner);
 	FCollisionResponseParams ResponseParam;
@@ -452,14 +469,14 @@ void UPBPlayerMovement::OnMovementModeChanged(EMovementMode PreviousMovementMode
 	Super::OnMovementModeChanged(PreviousMovementMode, PreviousCustomMode);
 }
 
-float UPBPlayerMovement::GetCameraRoll()
+double UPBPlayerMovement::GetCameraRoll() const
 {
-	if (RollSpeed == 0.0f || RollAngle == 0.0f)
+	if (RollSpeed == 0. || RollAngle == 0.)
 	{
-		return 0.0f;
+		return 0.;
 	}
-	float Side = Velocity | FRotationMatrix(GetCharacterOwner()->GetControlRotation()).GetScaledAxis(EAxis::Y);
-	const float Sign = FMath::Sign(Side);
+	double Side = Velocity | FRotationMatrix(GetCharacterOwner()->GetControlRotation()).GetScaledAxis(EAxis::Y);
+	const double Sign = FMath::Sign(Side);
 	Side = FMath::Abs(Side);
 	if (Side < RollSpeed)
 	{
@@ -587,12 +604,12 @@ void UPBPlayerMovement::UpdateSurfaceFriction(bool bIsSliding)
 	{
 		FHitResult Hit;
 		TraceCharacterFloor(Hit);
-		SurfaceFriction = GetFrictionFromHit(Hit);
+		SurfaceFriction = PlayerMovementPrivate::GetFrictionFromHit(Hit);
 	}
 	else
 	{
-		const bool bPlayerControlsMovedVertically = bOnLadder || Velocity.Z > JumpVelocity || Velocity.Z <= 0.0f || bCheatFlying;
-		if (bPlayerControlsMovedVertically)
+		// Player controls have moved vertically
+		if (bOnLadder || Velocity.Z > PlayerMovementConstants::JumpVelocity || Velocity.Z <= 0.0f || bCheatFlying)
 		{
 			SurfaceFriction = 1.0f;
 		}
@@ -610,51 +627,32 @@ void UPBPlayerMovement::UpdateCrouching(float DeltaTime, bool bOnlyUncrouch)
 		return;
 	}
 
-	// Crouch transition but not in noclip
-	if (bIsInCrouchTransition && !bCheatFlying)
+	if (bCheatFlying || !bIsInCrouchTransition)
 	{
-		// If the player wants to uncrouch, or we have to uncrouch after movement
-		if ((!bOnlyUncrouch && !bWantsToCrouch) || (bOnlyUncrouch && !CanCrouchInCurrentState()))
+		return;
+	}
+	
+	// If the player wants to uncrouch, or we have to uncrouch after movement
+	if ((!bOnlyUncrouch && !bWantsToCrouch) || (bOnlyUncrouch && !CanCrouchInCurrentState()))
+	{
+		DoUnCrouchResize(IsWalking() ? UncrouchTime : UncrouchJumpTime, DeltaTime);
+	}
+	else if (!bOnlyUncrouch)
+	{
+		if (bOnLadder)	  // if on a ladder, cancel this because bWantsToCrouch should be false
 		{
-			{
-				if (IsWalking())
-				{
-					// Normal uncrouch
-					DoUnCrouchResize(UncrouchTime, DeltaTime);
-				}
-				else
-				{
-					// Uncrouch jump
-					DoUnCrouchResize(UncrouchJumpTime, DeltaTime);
-				}
-			}
+			bIsInCrouchTransition = false;
 		}
-		else if (!bOnlyUncrouch)
+		else
 		{
-			if (bOnLadder)	  // if on a ladder, cancel this because bWantsToCrouch should be false
-			{
-				bIsInCrouchTransition = false;
-			}
-			else
-			{
-				if (IsWalking())
-				{
-					DoCrouchResize(CrouchTime, DeltaTime);
-				}
-				else
-				{
-					DoCrouchResize(CrouchJumpTime, DeltaTime);
-				}
-			}
+			DoCrouchResize(IsWalking() ? CrouchTime : CrouchJumpTime, DeltaTime);
 		}
 	}
 }
 
 UPBMoveStepSound* UPBPlayerMovement::GetMoveStepSoundBySurface(EPhysicalSurface SurfaceType) const
 {
-	TSubclassOf<UPBMoveStepSound>* GotSound = PBCharacter->GetMoveStepSound(TEnumAsByte<EPhysicalSurface>(SurfaceType));
-
-	if (GotSound)
+	if (const TSubclassOf<UPBMoveStepSound>* GotSound = PBCharacter->GetMoveStepSound(TEnumAsByte<EPhysicalSurface>(SurfaceType)))
 	{
 		return GotSound->GetDefaultObject();
 	}
@@ -682,26 +680,14 @@ void UPBPlayerMovement::PlayMoveSound(const float DeltaTime)
 		return;
 	}
 
-	const float Speed = Velocity.SizeSquared();
-	float RunSpeedThreshold;
-	float SprintSpeedThreshold;
+	const double Speed = Velocity.SizeSquared();
 
-	if (IsCrouching() || bOnLadder)
-	{
-		RunSpeedThreshold = MaxWalkSpeedCrouched;
-		SprintSpeedThreshold = MaxWalkSpeedCrouched * 1.7f;
-	}
-	else
-	{
-		RunSpeedThreshold = WalkSpeed;
-		SprintSpeedThreshold = SprintSpeed;
-	}
+	const bool bCrouchingOrOnLadder = IsCrouching() || bOnLadder;
+	const double RunSpeedThreshold = bCrouchingOrOnLadder ? MaxWalkSpeedCrouched : WalkSpeed;
+	const double SprintSpeedThreshold = bCrouchingOrOnLadder ? MaxWalkSpeedCrouched * 1.7 : SprintSpeed;
 
-	// Only play sounds if we are moving fast enough on the ground or on a
-	// ladder
-	const bool bPlaySound = (bBrakingWindowElapsed || bOnLadder) && Speed >= RunSpeedThreshold * RunSpeedThreshold;
-
-	if (!bPlaySound)
+	// Only play sounds if we are moving fast enough on the ground or on a ladder
+	if ((!bBrakingWindowElapsed && !bOnLadder) || Speed < RunSpeedThreshold * RunSpeedThreshold)
 	{
 		return;
 	}
@@ -800,22 +786,21 @@ void UPBPlayerMovement::PlayMoveSound(const float DeltaTime)
 		const FVector Location = CharacterOwner->GetActorLocation();
 		const FVector StepLocation(FVector(Location.X, Location.Y, Location.Z - GetCharacterOwner()->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
 
-		/*UPBGameplayStatics::SpawnSoundAtLocation(CharacterOwner->GetWorld(), Sound, StepLocation);*/
 		UGameplayStatics::SpawnSoundAtLocation(CharacterOwner->GetWorld(), Sound, StepLocation);
 
 		StepSide = !StepSide;
 	}
 }
 
-void UPBPlayerMovement::PlayJumpSound(const FHitResult& Hit, bool bJumped)
+void UPBPlayerMovement::PlayJumpSound(const FHitResult& Hit, const bool bJumped)
 {
 	if (!bShouldPlayMoveSounds)
 	{
 		return;
 	}
 
-	UPBMoveStepSound* MoveSound = nullptr;
-	TSubclassOf<UPBMoveStepSound>* GotSound = nullptr;
+	const UPBMoveStepSound* MoveSound{ nullptr };
+	const TSubclassOf<UPBMoveStepSound>* GotSound{ nullptr };
 	if (Hit.PhysMaterial.IsValid())
 	{
 		GotSound = PBCharacter->GetMoveStepSound(Hit.PhysMaterial->SurfaceType);
@@ -840,7 +825,7 @@ void UPBPlayerMovement::PlayJumpSound(const FHitResult& Hit, bool bJumped)
 		// if we didn't jump, adjust volume for landing
 		if (!bJumped)
 		{
-			const float FallSpeed = -Velocity.Z;
+			const double FallSpeed = -Velocity.Z;
 			if (FallSpeed > PBCharacter->GetMinSpeedForFallDamage())
 			{
 				MoveSoundVolume = 1.0f;
@@ -875,7 +860,7 @@ void UPBPlayerMovement::PlayJumpSound(const FHitResult& Hit, bool bJumped)
 
 		const TArray<USoundCue*>& MoveSoundCues = bJumped ? MoveSound->GetJumpSounds() : MoveSound->GetLandSounds();
 
-		if (MoveSoundCues.Num() < 1)
+		if (MoveSoundCues.IsEmpty())
 		{
 			return;
 		}
@@ -886,31 +871,31 @@ void UPBPlayerMovement::PlayJumpSound(const FHitResult& Hit, bool bJumped)
 		Sound->VolumeMultiplier = MoveSoundVolume;
 		const FVector Location = CharacterOwner->GetActorLocation();
 		const FVector StepLocation(Location.X, Location.Y, Location.Z - GetCharacterOwner()->GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
-		/*UPBGameplayStatics::SpawnSoundAtLocation(CharacterOwner->GetWorld(), Sound, StepLocation);*/
+		
 		UGameplayStatics::SpawnSoundAtLocation(CharacterOwner->GetWorld(), Sound, StepLocation);
 	}
 }
 
-void UPBPlayerMovement::PhysFalling(float deltaTime, int32 Iterations)
+void UPBPlayerMovement::PhysFalling(float DeltaTime, int32 Iterations)
 {
 	SCOPE_CYCLE_COUNTER(STAT_CharPhysFalling);
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(CharPhysFalling);
 
-	if (deltaTime < MIN_TICK_TIME)
+	if (DeltaTime < MIN_TICK_TIME)
 	{
 		return;
 	}
 
-	FVector FallAcceleration = GetFallingLateralAcceleration(deltaTime);
-	FallAcceleration.Z = 0.f;
-	const bool bHasLimitedAirControl = ShouldLimitAirControl(deltaTime, FallAcceleration);
+	FVector FallAcceleration = GetFallingLateralAcceleration(DeltaTime);
+	FallAcceleration.Z = 0.;
+	const bool bHasLimitedAirControl = ShouldLimitAirControl(DeltaTime, FallAcceleration);
 
-	float remainingTime = deltaTime;
-	while( (remainingTime >= MIN_TICK_TIME) && (Iterations < MaxSimulationIterations) )
+	float RemainingTime = DeltaTime;
+	while(RemainingTime >= MIN_TICK_TIME && Iterations < MaxSimulationIterations)
 	{
 		Iterations++;
-		float timeTick = GetSimulationTimeStep(remainingTime, Iterations);
-		remainingTime -= timeTick;
+		float TimeTick = GetSimulationTimeStep(RemainingTime, Iterations);
+		RemainingTime -= TimeTick;
 		
 		const FVector OldLocation = UpdatedComponent->GetComponentLocation();
 		const FQuat PawnRotation = UpdatedComponent->GetComponentQuat();
@@ -927,26 +912,25 @@ void UPBPlayerMovement::PhysFalling(float deltaTime, int32 Iterations)
 		if (!HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity())
 		{
 			// Compute Velocity
-			{
-				// Acceleration = FallAcceleration for CalcVelocity(), but we restore it after using it.
-				TGuardValue<FVector> RestoreAcceleration(Acceleration, FallAcceleration);
-				Velocity.Z = 0.f;
-				CalcVelocity(timeTick, FallingLateralFriction, false, MaxDecel);
-				Velocity.Z = OldVelocity.Z;
-			}
+			
+			// Acceleration = FallAcceleration for CalcVelocity(), but we restore it after using it.
+			TGuardValue<FVector> RestoreAcceleration(Acceleration, FallAcceleration);
+			Velocity.Z = 0.;
+			CalcVelocity(TimeTick, FallingLateralFriction, false, MaxDecel);
+			Velocity.Z = OldVelocity.Z;
 		}
 
 		// Compute current gravity
-		const FVector Gravity(0.f, 0.f, GetGravityZ());
-		float GravityTime = timeTick;
+		const FVector Gravity(0., 0., GetGravityZ());
+		float GravityTime = TimeTick;
 
 		// If jump is providing force, gravity may be affected.
 		bool bEndingJumpForce = false;
 		if (CharacterOwner->JumpForceTimeRemaining > 0.0f)
 		{
 			// Consume some of the force time. Only the remaining time (if any) is affected by gravity when bApplyGravityWhileJumping=false.
-			const float JumpForceTime = FMath::Min(CharacterOwner->JumpForceTimeRemaining, timeTick);
-			GravityTime = bApplyGravityWhileJumping ? timeTick : FMath::Max(0.0f, timeTick - JumpForceTime);
+			const float JumpForceTime = FMath::Min(CharacterOwner->JumpForceTimeRemaining, TimeTick);
+			GravityTime = bApplyGravityWhileJumping ? TimeTick : FMath::Max(0.0f, TimeTick - JumpForceTime);
 			
 			// Update Character state
 			CharacterOwner->JumpForceTimeRemaining -= JumpForceTime;
@@ -961,24 +945,24 @@ void UPBPlayerMovement::PhysFalling(float deltaTime, int32 Iterations)
 		Velocity = NewFallVelocity(Velocity, Gravity, GravityTime);
 
 		// See if we need to sub-step to exactly reach the apex. This is important for avoiding "cutting off the top" of the trajectory as framerate varies.
-		if (OldVelocity.Z > 0.f && Velocity.Z <= 0.f && NumJumpApexAttempts < MaxJumpApexAttemptsPerSimulation)
+		if (OldVelocity.Z > 0. && Velocity.Z <= 0. && NumJumpApexAttempts < MaxJumpApexAttemptsPerSimulation)
 		{
-			const FVector DerivedAccel = (Velocity - OldVelocity) / timeTick;
+			const FVector DerivedAccel = (Velocity - OldVelocity) / static_cast<double>(TimeTick);
 			if (!FMath::IsNearlyZero(DerivedAccel.Z))
 			{
-				const float TimeToApex = -OldVelocity.Z / DerivedAccel.Z;
+				const double TimeToApex = -OldVelocity.Z / DerivedAccel.Z;
 				
 				// The time-to-apex calculation should be precise, and we want to avoid adding a substep when we are basically already at the apex from the previous iteration's work.
-				const float ApexTimeMinimum = 0.0001f;
-				if (TimeToApex >= ApexTimeMinimum && TimeToApex < timeTick)
+				static constexpr double ApexTimeMinimum = 0.0001;
+				if (TimeToApex >= ApexTimeMinimum && TimeToApex < static_cast<double>(TimeTick))
 				{
 					const FVector ApexVelocity = OldVelocity + DerivedAccel * TimeToApex;
 					Velocity = ApexVelocity;
-					Velocity.Z = 0.f; // Should be nearly zero anyway, but this makes apex notifications consistent.
+					Velocity.Z = 0.; // Should be nearly zero anyway, but this makes apex notifications consistent.
 
 					// We only want to move the amount of time it takes to reach the apex, and refund the unused time for next iteration.
-					remainingTime += (timeTick - TimeToApex);
-					timeTick = TimeToApex;
+					RemainingTime += TimeTick - TimeToApex;
+					TimeTick = static_cast<float>(TimeToApex);
 					Iterations--;
 					NumJumpApexAttempts++;
 				}
@@ -986,9 +970,9 @@ void UPBPlayerMovement::PhysFalling(float deltaTime, int32 Iterations)
 		}
 
 		//UE_LOG(LogCharacterMovement, Log, TEXT("dt=(%.6f) OldLocation=(%s) OldVelocity=(%s) OldVelocityWithRootMotion=(%s) NewVelocity=(%s)"), timeTick, *(UpdatedComponent->GetComponentLocation()).ToString(), *OldVelocity.ToString(), *OldVelocityWithRootMotion.ToString(), *Velocity.ToString());
-		ApplyRootMotionToVelocity(timeTick);
+		ApplyRootMotionToVelocity(TimeTick);
 
-		if (bNotifyApex && (Velocity.Z < 0.f))
+		if (bNotifyApex && Velocity.Z < 0.)
 		{
 			// Just passed jump apex since now going down
 			bNotifyApex = false;
@@ -996,216 +980,212 @@ void UPBPlayerMovement::PhysFalling(float deltaTime, int32 Iterations)
 		}
 
 		// Compute change in position (using midpoint integration method).
-		FVector Adjusted = 0.5f * (OldVelocityWithRootMotion + Velocity) * timeTick;
+		FVector Adjusted = 0.5 * (OldVelocityWithRootMotion + Velocity) * static_cast<double>(TimeTick);
 		
 		// Special handling if ending the jump force where we didn't apply gravity during the jump.
 		if (bEndingJumpForce && !bApplyGravityWhileJumping)
 		{
 			// We had a portion of the time at constant speed then a portion with acceleration due to gravity.
 			// Account for that here with a more correct change in position.
-			const float NonGravityTime = FMath::Max(0.f, timeTick - GravityTime);
-			Adjusted = (OldVelocityWithRootMotion * NonGravityTime) + (0.5f*(OldVelocityWithRootMotion + Velocity) * GravityTime);
+			const float NonGravityTime = FMath::Max(0.f, TimeTick - GravityTime);
+			Adjusted = (OldVelocityWithRootMotion * static_cast<double>(NonGravityTime)) + (0.5 * (OldVelocityWithRootMotion + Velocity) * static_cast<double>(GravityTime));
 		}
 
 		// Move
 		FHitResult Hit(1.f);
-		SafeMoveUpdatedComponent( Adjusted, PawnRotation, true, Hit);
+		SafeMoveUpdatedComponent(Adjusted, PawnRotation, true, Hit);
 		
 		if (!HasValidData())
 		{
 			return;
 		}
 		
-		float LastMoveTimeSlice = timeTick;
-		float subTimeTickRemaining = timeTick * (1.f - Hit.Time);
+		float LastMoveTimeSlice = TimeTick;
+		float SubTimeTickRemaining = TimeTick * (1.f - Hit.Time);
 		
-		if ( IsSwimming() ) //just entered water
+		if (IsSwimming()) // just entered water
 		{
-			remainingTime += subTimeTickRemaining;
-			StartSwimming(OldLocation, OldVelocity, timeTick, remainingTime, Iterations);
+			RemainingTime += SubTimeTickRemaining;
+			StartSwimming(OldLocation, OldVelocity, TimeTick, RemainingTime, Iterations);
 			return;
 		}
-		else if ( Hit.bBlockingHit )
+		
+		if ( Hit.bBlockingHit )
 		{
 			if (IsValidLandingSpot(UpdatedComponent->GetComponentLocation(), Hit))
 			{
-				remainingTime += subTimeTickRemaining;
-				ProcessLanded(Hit, remainingTime, Iterations);
+				RemainingTime += SubTimeTickRemaining;
+				ProcessLanded(Hit, RemainingTime, Iterations);
 				return;
 			}
-			else
+			
+			// Compute impact deflection based on final velocity, not integration step.
+			// This allows us to compute a new velocity from the deflected vector, and ensures the full gravity effect is included in the slide result.
+			// UNDONE: NOPE NOPE NOPE, that's not how positional integration steps work!!!
+			//Adjusted = Velocity * timeTick;
+
+			// See if we can convert a normally invalid landing spot (based on the hit result) to a usable one.
+			if (!Hit.bStartPenetrating && ShouldCheckForValidLandingSpot(TimeTick, Adjusted, Hit))
 			{
-				// Compute impact deflection based on final velocity, not integration step.
-				// This allows us to compute a new velocity from the deflected vector, and ensures the full gravity effect is included in the slide result.
-				// UNDONE: NOPE NOPE NOPE, that's not how positional integration steps work!!!
-				//Adjusted = Velocity * timeTick;
-
-				// See if we can convert a normally invalid landing spot (based on the hit result) to a usable one.
-				if (!Hit.bStartPenetrating && ShouldCheckForValidLandingSpot(timeTick, Adjusted, Hit))
+				const FVector PawnLocation = UpdatedComponent->GetComponentLocation();
+				FFindFloorResult FloorResult;
+				FindFloor(PawnLocation, FloorResult, false);
+				if (FloorResult.IsWalkableFloor() && IsValidLandingSpot(PawnLocation, FloorResult.HitResult))
 				{
-					const FVector PawnLocation = UpdatedComponent->GetComponentLocation();
-					FFindFloorResult FloorResult;
-					FindFloor(PawnLocation, FloorResult, false);
-					if (FloorResult.IsWalkableFloor() && IsValidLandingSpot(PawnLocation, FloorResult.HitResult))
-					{
-						remainingTime += subTimeTickRemaining;
-						ProcessLanded(FloorResult.HitResult, remainingTime, Iterations);
-						return;
-					}
-				}
-
-				HandleImpact(Hit, LastMoveTimeSlice, Adjusted);
-				
-				// If we've changed physics mode, abort.
-				if (!HasValidData() || !IsFalling())
-				{
+					RemainingTime += SubTimeTickRemaining;
+					ProcessLanded(FloorResult.HitResult, RemainingTime, Iterations);
 					return;
 				}
+			}
 
-				// Limit air control based on what we hit.
-				// We moved to the impact point using air control, but may want to deflect from there based on a limited air control acceleration.
-				FVector VelocityNoAirControl = OldVelocity;
-				FVector AirControlAccel = Acceleration;
-				if (bHasLimitedAirControl)
+			HandleImpact(Hit, LastMoveTimeSlice, Adjusted);
+			
+			// If we've changed physics mode, abort.
+			if (!HasValidData() || !IsFalling())
+			{
+				return;
+			}
+
+			// Limit air control based on what we hit.
+			// We moved to the impact point using air control, but may want to deflect from there based on a limited air control acceleration.
+			FVector VelocityNoAirControl = OldVelocity;
+			FVector AirControlAccel = Acceleration;
+			if (bHasLimitedAirControl)
+			{
+				// Compute VelocityNoAirControl
 				{
-					// Compute VelocityNoAirControl
+					// Find velocity *without* acceleration.
+					TGuardValue<FVector> RestoreAcceleration(Acceleration, FVector::ZeroVector);
+					TGuardValue<FVector> RestoreVelocity(Velocity, OldVelocity);
+					Velocity.Z = 0.;
+					CalcVelocity(TimeTick, FallingLateralFriction, false, MaxDecel);
+					VelocityNoAirControl = FVector(Velocity.X, Velocity.Y, OldVelocity.Z);
+					VelocityNoAirControl = NewFallVelocity(VelocityNoAirControl, Gravity, GravityTime);
+				}
+
+				static constexpr bool bCheckLandingSpot = false; // we already checked above.
+				AirControlAccel = (Velocity - VelocityNoAirControl) / static_cast<double>(TimeTick);
+				const FVector AirControlDeltaV = LimitAirControl(LastMoveTimeSlice, AirControlAccel, Hit, bCheckLandingSpot) * static_cast<double>(LastMoveTimeSlice);
+				Adjusted = (VelocityNoAirControl + AirControlDeltaV) * static_cast<double>(LastMoveTimeSlice);
+			}
+
+			const FVector OldHitNormal = Hit.Normal;
+			const FVector OldHitImpactNormal = Hit.ImpactNormal;				
+			FVector Delta = ComputeSlideVector(Adjusted, 1.f - Hit.Time, OldHitNormal, Hit);
+			// TODO: Maybe there's a better way of integrating this?
+			FVector DeltaStep = ComputeSlideVector(Velocity * TimeTick, 1.f - Hit.Time, OldHitNormal, Hit);
+
+			// Compute velocity after deflection (only gravity component for RootMotion)
+			if (SubTimeTickRemaining > KINDA_SMALL_NUMBER && !bJustTeleported)
+			{
+				const FVector NewVelocity = DeltaStep / static_cast<double>(SubTimeTickRemaining);
+				Velocity = HasAnimRootMotion() || CurrentRootMotion.HasOverrideVelocityWithIgnoreZAccumulate() ? FVector(Velocity.X, Velocity.Y, NewVelocity.Z) : NewVelocity;
+			}
+
+			if (SubTimeTickRemaining > KINDA_SMALL_NUMBER && (Delta | Adjusted) > 0.)
+			{
+				// Move in deflected direction.
+				SafeMoveUpdatedComponent(Delta, PawnRotation, true, Hit);
+				
+				if (Hit.bBlockingHit)
+				{
+					// hit second wall
+					LastMoveTimeSlice = SubTimeTickRemaining;
+					SubTimeTickRemaining = SubTimeTickRemaining * (1.f - Hit.Time);
+
+					if (IsValidLandingSpot(UpdatedComponent->GetComponentLocation(), Hit))
 					{
-						// Find velocity *without* acceleration.
-						TGuardValue<FVector> RestoreAcceleration(Acceleration, FVector::ZeroVector);
-						TGuardValue<FVector> RestoreVelocity(Velocity, OldVelocity);
-						Velocity.Z = 0.f;
-						CalcVelocity(timeTick, FallingLateralFriction, false, MaxDecel);
-						VelocityNoAirControl = FVector(Velocity.X, Velocity.Y, OldVelocity.Z);
-						VelocityNoAirControl = NewFallVelocity(VelocityNoAirControl, Gravity, GravityTime);
+						RemainingTime += SubTimeTickRemaining;
+						ProcessLanded(Hit, RemainingTime, Iterations);
+						return;
 					}
 
-					const bool bCheckLandingSpot = false; // we already checked above.
-					AirControlAccel = (Velocity - VelocityNoAirControl) / timeTick;
-					const FVector AirControlDeltaV = LimitAirControl(LastMoveTimeSlice, AirControlAccel, Hit, bCheckLandingSpot) * LastMoveTimeSlice;
-					Adjusted = (VelocityNoAirControl + AirControlDeltaV) * LastMoveTimeSlice;
-				}
+					HandleImpact(Hit, LastMoveTimeSlice, Delta);
 
-				const FVector OldHitNormal = Hit.Normal;
-				const FVector OldHitImpactNormal = Hit.ImpactNormal;				
-				FVector Delta = ComputeSlideVector(Adjusted, 1.f - Hit.Time, OldHitNormal, Hit);
-				// TODO: Maybe there's a better way of integrating this?
-				FVector DeltaStep = ComputeSlideVector(Velocity * timeTick, 1.f - Hit.Time, OldHitNormal, Hit);
-
-				// Compute velocity after deflection (only gravity component for RootMotion)
-				if (subTimeTickRemaining > KINDA_SMALL_NUMBER && !bJustTeleported)
-				{
-					const FVector NewVelocity = (DeltaStep / subTimeTickRemaining);
-					Velocity = HasAnimRootMotion() || CurrentRootMotion.HasOverrideVelocityWithIgnoreZAccumulate() ? FVector(Velocity.X, Velocity.Y, NewVelocity.Z) : NewVelocity;
-				}
-
-				if (subTimeTickRemaining > KINDA_SMALL_NUMBER && (Delta | Adjusted) > 0.f)
-				{
-					// Move in deflected direction.
-					SafeMoveUpdatedComponent( Delta, PawnRotation, true, Hit);
-					
-					if (Hit.bBlockingHit)
+					// If we've changed physics mode, abort.
+					if (!HasValidData() || !IsFalling())
 					{
-						// hit second wall
-						LastMoveTimeSlice = subTimeTickRemaining;
-						subTimeTickRemaining = subTimeTickRemaining * (1.f - Hit.Time);
+						return;
+					}
 
-						if (IsValidLandingSpot(UpdatedComponent->GetComponentLocation(), Hit))
+					// Act as if there was no air control on the last move when computing new deflection.
+					if (bHasLimitedAirControl && Hit.Normal.Z > PlayerMovementConstants::VerticalSlopeNormalZ)
+					{
+						const FVector LastMoveNoAirControl = VelocityNoAirControl * static_cast<double>(LastMoveTimeSlice);
+						Delta = ComputeSlideVector(LastMoveNoAirControl, 1.f, OldHitNormal, Hit);
+					}
+
+					TwoWallAdjust(Delta, Hit, OldHitNormal);
+
+					// Limit air control, but allow a slide along the second wall.
+					if (bHasLimitedAirControl)
+					{
+						// Only allow if not back in to first wall
+						static constexpr bool bCheckLandingSpot = false; // we already checked above.
+						if (const FVector AirControlDeltaV = LimitAirControl(SubTimeTickRemaining, AirControlAccel, Hit, bCheckLandingSpot) * SubTimeTickRemaining; FVector::DotProduct(AirControlDeltaV, OldHitNormal) > 0.f)
 						{
-							remainingTime += subTimeTickRemaining;
-							ProcessLanded(Hit, remainingTime, Iterations);
-							return;
+							Delta += AirControlDeltaV * static_cast<double>(SubTimeTickRemaining);
 						}
+					}
 
-						HandleImpact(Hit, LastMoveTimeSlice, Delta);
+					// Compute velocity after deflection (only gravity component for RootMotion)
+					if (SubTimeTickRemaining > KINDA_SMALL_NUMBER && !bJustTeleported)
+					{
+						const FVector NewVelocity = Delta / static_cast<double>(SubTimeTickRemaining);
+						Velocity = HasAnimRootMotion() || CurrentRootMotion.HasOverrideVelocityWithIgnoreZAccumulate() ? FVector{ Velocity.X, Velocity.Y, NewVelocity.Z } : NewVelocity;
+					}
 
-						// If we've changed physics mode, abort.
-						if (!HasValidData() || !IsFalling())
+					// bDitch=true means that pawn is straddling two slopes, neither of which he can stand on
+					bool bDitch = OldHitImpactNormal.Z > 0. && Hit.ImpactNormal.Z > 0. && FMath::Abs(Delta.Z) <= DOUBLE_KINDA_SMALL_NUMBER && (Hit.ImpactNormal | OldHitImpactNormal) < 0.;
+					SafeMoveUpdatedComponent(Delta, PawnRotation, true, Hit);
+					if (Hit.Time == 0.f)
+					{
+						// if we are stuck then try to side step
+						FVector SideDelta = (OldHitNormal + Hit.ImpactNormal).GetSafeNormal2D();
+						if (SideDelta.IsNearlyZero())
 						{
-							return;
+							SideDelta = FVector{ OldHitNormal.Y, -OldHitNormal.X, 0. }.GetSafeNormal();
 						}
-
-						// Act as if there was no air control on the last move when computing new deflection.
-						if (bHasLimitedAirControl && Hit.Normal.Z > VERTICAL_SLOPE_NORMAL_Z)
+						SafeMoveUpdatedComponent( SideDelta, PawnRotation, true, Hit);
+					}
+						
+					if (bDitch || IsValidLandingSpot(UpdatedComponent->GetComponentLocation(), Hit) || Hit.Time == 0.f)
+					{
+						RemainingTime = 0.f;
+						ProcessLanded(Hit, RemainingTime, Iterations);
+						return;
+					}
+					
+					if (GetPerchRadiusThreshold() > 0.f && Hit.Time == 1.f && OldHitImpactNormal.Z >= static_cast<double>(GetWalkableFloorZ()))
+					{
+						// We might be in a virtual 'ditch' within our perch radius. This is rare.
+						const FVector PawnLocation = UpdatedComponent->GetComponentLocation();
+						const double ZMovedDist = FMath::Abs(PawnLocation.Z - OldLocation.Z);
+						const double MovedDist2DSq = (PawnLocation - OldLocation).SizeSquared2D();
+						if (ZMovedDist <= 0.2 * static_cast<double>(TimeTick) && MovedDist2DSq <= 4. * static_cast<double>(TimeTick))
 						{
-							const FVector LastMoveNoAirControl = VelocityNoAirControl * LastMoveTimeSlice;
-							Delta = ComputeSlideVector(LastMoveNoAirControl, 1.f, OldHitNormal, Hit);
-						}
-
-						FVector PreTwoWallDelta = Delta;
-						TwoWallAdjust(Delta, Hit, OldHitNormal);
-
-						// Limit air control, but allow a slide along the second wall.
-						if (bHasLimitedAirControl)
-						{
-							const bool bCheckLandingSpot = false; // we already checked above.
-							const FVector AirControlDeltaV = LimitAirControl(subTimeTickRemaining, AirControlAccel, Hit, bCheckLandingSpot) * subTimeTickRemaining;
-
-							// Only allow if not back in to first wall
-							if (FVector::DotProduct(AirControlDeltaV, OldHitNormal) > 0.f)
-							{
-								Delta += (AirControlDeltaV * subTimeTickRemaining);
-							}
-						}
-
-						// Compute velocity after deflection (only gravity component for RootMotion)
-						if (subTimeTickRemaining > KINDA_SMALL_NUMBER && !bJustTeleported)
-						{
-							const FVector NewVelocity = (Delta / subTimeTickRemaining);
-							Velocity = HasAnimRootMotion() || CurrentRootMotion.HasOverrideVelocityWithIgnoreZAccumulate() ? FVector(Velocity.X, Velocity.Y, NewVelocity.Z) : NewVelocity;
-						}
-
-						// bDitch=true means that pawn is straddling two slopes, neither of which he can stand on
-						bool bDitch = ( (OldHitImpactNormal.Z > 0.f) && (Hit.ImpactNormal.Z > 0.f) && (FMath::Abs(Delta.Z) <= KINDA_SMALL_NUMBER) && ((Hit.ImpactNormal | OldHitImpactNormal) < 0.f) );
-						SafeMoveUpdatedComponent( Delta, PawnRotation, true, Hit);
-						if ( Hit.Time == 0.f )
-						{
-							// if we are stuck then try to side step
-							FVector SideDelta = (OldHitNormal + Hit.ImpactNormal).GetSafeNormal2D();
-							if ( SideDelta.IsNearlyZero() )
-							{
-								SideDelta = FVector(OldHitNormal.Y, -OldHitNormal.X, 0).GetSafeNormal();
-							}
-							SafeMoveUpdatedComponent( SideDelta, PawnRotation, true, Hit);
-						}
-							
-						if ( bDitch || IsValidLandingSpot(UpdatedComponent->GetComponentLocation(), Hit) || Hit.Time == 0.f  )
-						{
-							remainingTime = 0.f;
-							ProcessLanded(Hit, remainingTime, Iterations);
-							return;
-						}
-						else if (GetPerchRadiusThreshold() > 0.f && Hit.Time == 1.f && OldHitImpactNormal.Z >= GetWalkableFloorZ())
-						{
-							// We might be in a virtual 'ditch' within our perch radius. This is rare.
-							const FVector PawnLocation = UpdatedComponent->GetComponentLocation();
-							const float ZMovedDist = FMath::Abs(PawnLocation.Z - OldLocation.Z);
-							const float MovedDist2DSq = (PawnLocation - OldLocation).SizeSquared2D();
-							if (ZMovedDist <= 0.2f * timeTick && MovedDist2DSq <= 4.f * timeTick)
-							{
-								Velocity.X += 0.25f * GetMaxSpeed() * (RandomStream.FRand() - 0.5f);
-								Velocity.Y += 0.25f * GetMaxSpeed() * (RandomStream.FRand() - 0.5f);
-								Velocity.Z = FMath::Max<float>(JumpZVelocity * 0.25f, 1.f);
-								Delta = Velocity * timeTick;
-								SafeMoveUpdatedComponent(Delta, PawnRotation, true, Hit);
-							}
+							const double MaxSpeed = GetMaxSpeed();
+							Velocity.X += 0.25 * MaxSpeed * (static_cast<double>(RandomStream.FRand()) - 0.5);
+							Velocity.Y += 0.25 * MaxSpeed * (static_cast<double>(RandomStream.FRand()) - 0.5);
+							Velocity.Z = static_cast<double>(FMath::Max<float>(JumpZVelocity * 0.25f, 1.f));
+							Delta = Velocity * TimeTick;
+							SafeMoveUpdatedComponent(Delta, PawnRotation, true, Hit);
 						}
 					}
 				}
 			}
 		}
 
-		if (Velocity.SizeSquared2D() <= KINDA_SMALL_NUMBER * 10.f)
+		if (Velocity.SizeSquared2D() <= DOUBLE_KINDA_SMALL_NUMBER * 10.)
 		{
-			Velocity.X = 0.f;
-			Velocity.Y = 0.f;
+			Velocity.X = 0.;
+			Velocity.Y = 0.;
 		}
 	}
 }
 
 void UPBPlayerMovement::CalcVelocity(float DeltaTime, float Friction, bool bFluid, float BrakingDeceleration)
 {
-	// UE4-COPY: void UCharacterMovementComponent::CalcVelocity(float DeltaTime, float Friction, bool bFluid, float BrakingDeceleration)
-
 	// Do not update velocity when using root motion or when SimulatedProxy and not simulating root motion - SimulatedProxy are repped their Velocity
 	if (!HasValidData() || HasAnimRootMotion() || DeltaTime < MIN_TICK_TIME || (CharacterOwner && CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy && !bWasSimulatingRootMotion))
 	{
@@ -1213,46 +1193,26 @@ void UPBPlayerMovement::CalcVelocity(float DeltaTime, float Friction, bool bFlui
 	}
 
 	Friction = FMath::Max(0.0f, Friction);
-	const float MaxAccel = GetMaxAcceleration();
-	float MaxSpeed = GetMaxSpeed();
-
-	// Player doesn't path follow
-#if 0
-	// Check if path following requested movement
-	bool bZeroRequestedAcceleration = true;
-	FVector RequestedAcceleration = FVector::ZeroVector;
-	float RequestedSpeed = 0.0f;
-	if (ApplyRequestedMove(DeltaTime, MaxAccel, MaxSpeed, Friction, BrakingDeceleration, RequestedAcceleration, RequestedSpeed))
-	{
-		RequestedAcceleration = RequestedAcceleration.GetClampedToMaxSize(MaxAccel);
-		bZeroRequestedAcceleration = false;
-	}
-#endif
+	const double MaxAccel = GetMaxAcceleration();
+	double MaxSpeed = GetMaxSpeed();
 
 	if (bForceMaxAccel)
 	{
 		// Force acceleration at full speed.
 		// In consideration order for direction: Acceleration, then Velocity, then Pawn's rotation.
-		if (Acceleration.SizeSquared() > SMALL_NUMBER)
+		if (Acceleration.SizeSquared() > DOUBLE_SMALL_NUMBER)
 		{
 			Acceleration = Acceleration.GetSafeNormal() * MaxAccel;
 		}
 		else
 		{
-			Acceleration = MaxAccel * (Velocity.SizeSquared() < SMALL_NUMBER ? UpdatedComponent->GetForwardVector() : Velocity.GetSafeNormal());
+			Acceleration = MaxAccel * (Velocity.SizeSquared() < DOUBLE_SMALL_NUMBER ? UpdatedComponent->GetForwardVector() : Velocity.GetSafeNormal());
 		}
 
 		AnalogInputModifier = 1.0f;
 	}
 
-#if 0
-	// Path following above didn't care about the analog modifier, but we do for everything else below, so get the fully modified value.
-	// Use max of requested speed and max speed if we modified the speed in ApplyRequestedMove above.
-	const float MaxInputSpeed = FMath::Max(MaxSpeed * AnalogInputModifier, GetMinAnalogSpeed());
-	MaxSpeed = FMath::Max(RequestedSpeed, MaxInputSpeed);
-#else
-	MaxSpeed = FMath::Max(MaxSpeed * AnalogInputModifier, GetMinAnalogSpeed());
-#endif
+	MaxSpeed = FMath::Max(MaxSpeed * static_cast<double>(AnalogInputModifier), static_cast<double>(GetMinAnalogSpeed()));
 
 	// Apply braking or deceleration
 	const bool bZeroAcceleration = Acceleration.IsNearlyZero();
@@ -1268,7 +1228,7 @@ void UPBPlayerMovement::CalcVelocity(float DeltaTime, float Friction, bool bFlui
 		ApplyVelocityBraking(DeltaTime, ActualBrakingFriction, BrakingDeceleration);
 
 		// Don't allow braking to lower us below max speed if we started above it.
-		if (bVelocityOverMax && Velocity.SizeSquared() < FMath::Square(MaxSpeed) && FVector::DotProduct(Acceleration, OldVelocity) > 0.0f)
+		if (bVelocityOverMax && Velocity.SizeSquared() < FMath::Square(MaxSpeed) && FVector::DotProduct(Acceleration, OldVelocity) > 0.)
 		{
 			Velocity = OldVelocity.GetSafeNormal() * MaxSpeed;
 		}
@@ -1277,7 +1237,7 @@ void UPBPlayerMovement::CalcVelocity(float DeltaTime, float Friction, bool bFlui
 	// Apply fluid friction
 	if (bFluid)
 	{
-		Velocity = Velocity * (1.0f - FMath::Min(Friction * DeltaTime, 1.0f));
+		Velocity = Velocity * static_cast<double>(1.0f - FMath::Min(Friction * DeltaTime, 1.0f));
 	}
 
 	// Limit before
@@ -1289,18 +1249,18 @@ void UPBPlayerMovement::CalcVelocity(float DeltaTime, float Friction, bool bFlui
 	{
 		if (bZeroAcceleration)
 		{
-			Velocity = FVector(0.0f);
+			Velocity = FVector{ 0. };
 		}
 		else
 		{
-			auto LookVec = CharacterOwner->GetControlRotation().Vector();
-			auto LookVec2D = CharacterOwner->GetActorForwardVector();
-			LookVec2D.Z = 0.0f;
-			auto PerpendicularAccel = (LookVec2D | Acceleration) * LookVec2D;
-			auto TangentialAccel = Acceleration - PerpendicularAccel;
-			auto UnitAcceleration = Acceleration;
-			auto Dir = UnitAcceleration.CosineAngle2D(LookVec);
-			auto NoClipAccelClamp = PBCharacter->IsSprinting() ? 2.0f * MaxAcceleration : MaxAcceleration;
+			const FVector LookVec = CharacterOwner->GetControlRotation().Vector();
+			FVector LookVec2D = CharacterOwner->GetActorForwardVector();
+			LookVec2D.Z = 0.;
+			const FVector PerpendicularAccel = (LookVec2D | Acceleration) * LookVec2D;
+			const FVector TangentialAccel = Acceleration - PerpendicularAccel;
+			const FVector UnitAcceleration = Acceleration;
+			const double Dir = UnitAcceleration.CosineAngle2D(LookVec);
+			const float NoClipAccelClamp = PBCharacter->IsSprinting() ? 2.0f * MaxAcceleration : MaxAcceleration;
 			Velocity = (Dir * LookVec * PerpendicularAccel.Size2D() + TangentialAccel).GetClampedToSize(NoClipAccelClamp, NoClipAccelClamp);
 		}
 	}
@@ -1318,65 +1278,46 @@ void UPBPlayerMovement::CalcVelocity(float DeltaTime, float Friction, bool bFlui
 			Acceleration = Acceleration.GetClampedToMaxSize2D(MaxSpeed);
 			// Find veer
 			const FVector AccelDir = Acceleration.GetSafeNormal2D();
-			const float Veer = Velocity.X * AccelDir.X + Velocity.Y * AccelDir.Y;
+			const double Veer = Velocity.X * AccelDir.X + Velocity.Y * AccelDir.Y;
 			// Get add speed with air speed cap
-			const float AddSpeed = (bIsGroundMove ? Acceleration : Acceleration.GetClampedToMaxSize2D(AirSpeedCap)).Size2D() - Veer;
-			if (AddSpeed > 0.0f)
+			const double AddSpeed = (bIsGroundMove ? Acceleration : Acceleration.GetClampedToMaxSize2D(AirSpeedCap)).Size2D() - Veer;
+			if (AddSpeed > 0.)
 			{
 				// Apply acceleration
-				const float AccelerationMultiplier = bIsGroundMove ? GroundAccelerationMultiplier : AirAccelerationMultiplier;
-				FVector CurrentAcceleration = Acceleration * AccelerationMultiplier * SurfaceFriction * DeltaTime;
-				CurrentAcceleration = CurrentAcceleration.GetClampedToMaxSize2D(AddSpeed);
+				const double AccelerationMultiplier = bIsGroundMove ? GroundAccelerationMultiplier : AirAccelerationMultiplier;
+				const FVector CurrentAcceleration = (Acceleration * AccelerationMultiplier * static_cast<double>(SurfaceFriction) * static_cast<double>(DeltaTime)).GetClampedToMaxSize2D(AddSpeed);
 				Velocity += CurrentAcceleration;
 			}
 		}
-
-		// No requested accel on player
-#if 0
-		// Apply additional requested acceleration
-		if (!bZeroRequestedAcceleration)
-		{
-			Velocity += RequestedAcceleration * DeltaTime;
-		}
-#endif
 	}
 
 	// Limit after
 	Velocity.X = FMath::Clamp(Velocity.X, -AxisSpeedLimit, AxisSpeedLimit);
 	Velocity.Y = FMath::Clamp(Velocity.Y, -AxisSpeedLimit, AxisSpeedLimit);
 
-	const float SpeedSq = Velocity.SizeSquared2D();
+	const double SpeedSq = Velocity.SizeSquared2D();
 
 	// Dynamic step height code for allowing sliding on a slope when at a high speed
-	if (bOnLadder || SpeedSq <= MaxWalkSpeedCrouched * MaxWalkSpeedCrouched)
+	if (bOnLadder || SpeedSq <= static_cast<double>(MaxWalkSpeedCrouched) * static_cast<double>(MaxWalkSpeedCrouched))
 	{
 		// If we're crouching or not sliding, just use max
 		MaxStepHeight = DefaultStepHeight;
-		SetWalkableFloorZ(DefaultWalkableFloorZ);
+		SetWalkableFloorZ(static_cast<float>(DefaultWalkableFloorZ));
 	}
 	else
 	{
 		// Scale step/ramp height down the faster we go
-		float Speed = FMath::Sqrt(SpeedSq);
-		float SpeedScale = (Speed - SpeedMultMin) / (SpeedMultMax - SpeedMultMin);
-		float SpeedMultiplier = FMath::Clamp(SpeedScale, 0.0f, 1.0f);
-		SpeedMultiplier *= SpeedMultiplier;
+		const double Speed = FMath::Sqrt(SpeedSq);
+		const double SpeedScale = (Speed - SpeedMultMin) / (SpeedMultMax - SpeedMultMin);
+		double SpeedMultiplier = FMath::Square(FMath::Clamp(SpeedScale, 0., 1.));
 		if (!IsFalling())
 		{
 			// If we're on ground, factor in friction.
-			SpeedMultiplier = FMath::Max((1.0f - SurfaceFriction) * SpeedMultiplier, 0.0f);
+			SpeedMultiplier = FMath::Max((1. - static_cast<double>(SurfaceFriction)) * SpeedMultiplier, 0.);
 		}
-		MaxStepHeight = FMath::Lerp(DefaultStepHeight, MinStepHeight, SpeedMultiplier);
-		SetWalkableFloorZ(FMath::Lerp(DefaultWalkableFloorZ, 0.9848f, SpeedMultiplier));
+		MaxStepHeight = static_cast<float>(FMath::Lerp(DefaultStepHeight, MinStepHeight, SpeedMultiplier));
+		SetWalkableFloorZ(static_cast<float>(FMath::Lerp(DefaultWalkableFloorZ, 0.9848, SpeedMultiplier)));
 	}
-
-	// Players don't use RVO avoidance
-#if 0
-	if (bUseRVOAvoidance)
-	{
-		CalcAvoidanceVelocity(DeltaTime);
-	}
-#endif
 }
 
 void UPBPlayerMovement::Crouch(bool bClientSimulation)
@@ -1402,7 +1343,7 @@ void UPBPlayerMovement::DoCrouchResize(float TargetTime, float DeltaTime, bool b
 
 	// See if collision is already at desired size.
 	UCapsuleComponent* CharacterCapsule = CharacterOwner->GetCapsuleComponent();
-	if (FMath::IsNearlyEqual(CharacterCapsule->GetUnscaledCapsuleHalfHeight(), CrouchedHalfHeight))
+	if (FMath::IsNearlyEqual(CharacterCapsule->GetUnscaledCapsuleHalfHeight(), GetCrouchedHalfHeight()))
 	{
 		if (!bClientSimulation)
 		{
@@ -1413,7 +1354,7 @@ void UPBPlayerMovement::DoCrouchResize(float TargetTime, float DeltaTime, bool b
 		return;
 	}
 
-	ACharacter* DefaultCharacter = CharacterOwner->GetClass()->GetDefaultObject<ACharacter>();
+	const ACharacter* DefaultCharacter = CharacterOwner->GetClass()->GetDefaultObject<ACharacter>();
 
 	if (bClientSimulation && CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy)
 	{
@@ -1426,11 +1367,11 @@ void UPBPlayerMovement::DoCrouchResize(float TargetTime, float DeltaTime, bool b
 	const float ComponentScale = CharacterCapsule->GetShapeScale();
 	const float OldUnscaledHalfHeight = DefaultCharacter->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
 	const float OldUnscaledRadius = CharacterCapsule->GetUnscaledCapsuleRadius();
-	const float FullCrouchDiff = OldUnscaledHalfHeight - CrouchedHalfHeight;
+	const float FullCrouchDiff = OldUnscaledHalfHeight - GetCrouchedHalfHeight();
 	const float CurrentUnscaledHalfHeight = CharacterCapsule->GetUnscaledCapsuleHalfHeight();
 	// Determine the crouching progress
 	const bool bInstantCrouch = FMath::IsNearlyZero(TargetTime);
-	const float CurrentAlpha = 1.0f - (CurrentUnscaledHalfHeight - CrouchedHalfHeight) / FullCrouchDiff;
+	const float CurrentAlpha = 1.0f - (CurrentUnscaledHalfHeight - GetCrouchedHalfHeight()) / FullCrouchDiff;
 	// Determine how much we are progressing this tick
 	float TargetAlphaDiff = 1.0f;
 	float TargetAlpha = 1.0f;
@@ -1447,12 +1388,12 @@ void UPBPlayerMovement::DoCrouchResize(float TargetTime, float DeltaTime, bool b
 		CharacterOwner->bIsCrouched = true;
 	}
 	// Determine the target height for this tick
-	float TargetCrouchedHalfHeight = OldUnscaledHalfHeight - FullCrouchDiff * TargetAlpha;
+	const float TargetCrouchedHalfHeight = OldUnscaledHalfHeight - FullCrouchDiff * TargetAlpha;
 	// Height is not allowed to be smaller than radius.
-	float ClampedCrouchedHalfHeight = FMath::Max3(0.0f, OldUnscaledRadius, TargetCrouchedHalfHeight);
+	const float ClampedCrouchedHalfHeight = FMath::Max3(0.0f, OldUnscaledRadius, TargetCrouchedHalfHeight);
 	CharacterCapsule->SetCapsuleSize(OldUnscaledRadius, ClampedCrouchedHalfHeight);
-	float HalfHeightAdjust = FullCrouchDiff * TargetAlphaDiff;
-	float ScaledHalfHeightAdjust = HalfHeightAdjust * ComponentScale;
+	const float HalfHeightAdjust = FullCrouchDiff * TargetAlphaDiff;
+	const float ScaledHalfHeightAdjust = HalfHeightAdjust * ComponentScale;
 
 	if (!bClientSimulation)
 	{
@@ -1461,11 +1402,11 @@ void UPBPlayerMovement::DoCrouchResize(float TargetTime, float DeltaTime, bool b
 			// Intentionally not using MoveUpdatedComponent, where a horizontal
 			// plane constraint would prevent the base of the capsule from
 			// staying at the same spot.
-			UpdatedComponent->MoveComponent(FVector(0.0f, 0.0f, -ScaledHalfHeightAdjust), UpdatedComponent->GetComponentQuat(), true, nullptr, MOVECOMP_NoFlags, ETeleportType::TeleportPhysics);
+			UpdatedComponent->MoveComponent(FVector{ 0., 0., -static_cast<double>(ScaledHalfHeightAdjust) }, UpdatedComponent->GetComponentQuat(), true, nullptr, MOVECOMP_NoFlags, ETeleportType::TeleportPhysics);
 		}
 		else
 		{
-			UpdatedComponent->MoveComponent(FVector(0.0f, 0.0f, ScaledHalfHeightAdjust), UpdatedComponent->GetComponentQuat(), true, nullptr, MOVECOMP_NoFlags, ETeleportType::None);
+			UpdatedComponent->MoveComponent(FVector{ 0., 0., static_cast<double>(ScaledHalfHeightAdjust) }, UpdatedComponent->GetComponentQuat(), true, nullptr, MOVECOMP_NoFlags, ETeleportType::None);
 		}
 	}
 
@@ -1478,10 +1419,9 @@ void UPBPlayerMovement::DoCrouchResize(float TargetTime, float DeltaTime, bool b
 	// Don't smooth this change in mesh position
 	if ((bClientSimulation && CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy) || (IsNetMode(NM_ListenServer) && CharacterOwner->GetRemoteRole() == ROLE_AutonomousProxy))
 	{
-		FNetworkPredictionData_Client_Character* ClientData = GetPredictionData_Client_Character();
-		if (ClientData)
+		if (FNetworkPredictionData_Client_Character* ClientData = GetPredictionData_Client_Character())
 		{
-			ClientData->MeshTranslationOffset -= FVector(0.0f, 0.0f, ScaledHalfHeightAdjust);
+			ClientData->MeshTranslationOffset -= FVector{ 0., 0., ScaledHalfHeightAdjust };
 			ClientData->OriginalMeshTranslationOffset = ClientData->MeshTranslationOffset;
 		}
 	}
@@ -1530,7 +1470,7 @@ void UPBPlayerMovement::DoUnCrouchResize(float TargetTime, float DeltaTime, bool
 	const float ComponentScale = CharacterCapsule->GetShapeScale();
 	const float OldUnscaledHalfHeight = CharacterCapsule->GetUnscaledCapsuleHalfHeight();
 	const float UncrouchedHeight = DefaultCharacter->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
-	const float FullCrouchDiff = UncrouchedHeight - CrouchedHalfHeight;
+	const float FullCrouchDiff = UncrouchedHeight - GetCrouchedHalfHeight();
 	// Determine the crouching progress
 	const bool InstantCrouch = FMath::IsNearlyZero(TargetTime);
 	float CurrentAlpha = 1.0f - (UncrouchedHeight - OldUnscaledHalfHeight) / FullCrouchDiff;
@@ -1547,7 +1487,7 @@ void UPBPlayerMovement::DoUnCrouchResize(float TargetTime, float DeltaTime, bool
 		{
 			// Try to stay in place and see if the larger capsule fits. We use a
 			// slightly taller capsule to avoid penetration.
-			const float SweepInflation = KINDA_SMALL_NUMBER * 10.0f;
+			static constexpr float SweepInflation = KINDA_SMALL_NUMBER * 10.0f;
 			FCollisionQueryParams CapsuleParams(SCENE_QUERY_STAT(CrouchTrace), false, CharacterOwner);
 			FCollisionResponseParams ResponseParam;
 			InitCollisionParams(CapsuleParams, ResponseParam);
@@ -1560,8 +1500,9 @@ void UPBPlayerMovement::DoUnCrouchResize(float TargetTime, float DeltaTime, bool
 			const FCollisionShape StandingCapsuleShape = GetPawnCapsuleCollisionShape(SHRINK_HeightCustom, -SweepInflation - HalfHeightAdjust);
 			const ECollisionChannel CollisionChannel = UpdatedComponent->GetCollisionObjectType();
 			FVector StandingLocation = PawnLocation + FVector(0.0f, 0.0f, StandingCapsuleShape.GetCapsuleHalfHeight() - CurrentCrouchedHalfHeight);
-			bool bEncroached = MyWorld->OverlapBlockingTestByChannel(StandingLocation, FQuat::Identity, CollisionChannel, StandingCapsuleShape, CapsuleParams, ResponseParam);
-			if (bEncroached)
+
+			// Encroached
+			if (MyWorld->OverlapBlockingTestByChannel(StandingLocation, FQuat::Identity, CollisionChannel, StandingCapsuleShape, CapsuleParams, ResponseParam))
 			{
 				// We're blocked from doing a full uncrouch, so don't attempt for now
 				return;
@@ -1584,7 +1525,7 @@ void UPBPlayerMovement::DoUnCrouchResize(float TargetTime, float DeltaTime, bool
 	{
 		// Try to stay in place and see if the larger capsule fits. We use a
 		// slightly taller capsule to avoid penetration.
-		const float SweepInflation = KINDA_SMALL_NUMBER * 10.0f;
+		static constexpr float SweepInflation = KINDA_SMALL_NUMBER * 10.0f;
 		FCollisionQueryParams CapsuleParams(SCENE_QUERY_STAT(CrouchTrace), false, CharacterOwner);
 		FCollisionResponseParams ResponseParam;
 		InitCollisionParams(CapsuleParams, ResponseParam);
@@ -1626,7 +1567,7 @@ void UPBPlayerMovement::DoUnCrouchResize(float TargetTime, float DeltaTime, bool
 						// Compute where the base of the sweep ended up, and see
 						// if we can stand there
 						const float DistanceToBase = (Hit.Time * TraceDist) + ShortCapsuleShape.Capsule.HalfHeight;
-						const FVector NewLoc = FVector(PawnLocation.X, PawnLocation.Y, PawnLocation.Z - DistanceToBase + StandingCapsuleShape.Capsule.HalfHeight + SweepInflation + MIN_FLOOR_DIST / 2.0f);
+						const FVector NewLoc{ PawnLocation.X, PawnLocation.Y, PawnLocation.Z - DistanceToBase + StandingCapsuleShape.Capsule.HalfHeight + SweepInflation + MIN_FLOOR_DIST / 2.0f };
 						bEncroached = MyWorld->OverlapBlockingTestByChannel(NewLoc, FQuat::Identity, CollisionChannel, StandingCapsuleShape, CapsuleParams, ResponseParam);
 						if (!bEncroached)
 						{
@@ -1643,21 +1584,18 @@ void UPBPlayerMovement::DoUnCrouchResize(float TargetTime, float DeltaTime, bool
 		else
 		{
 			// Expand while keeping base location the same.
-			FVector StandingLocation = PawnLocation + FVector(0.0f, 0.0f, StandingCapsuleShape.GetCapsuleHalfHeight() - CurrentCrouchedHalfHeight);
+			FVector StandingLocation = PawnLocation + FVector{ 0., 0., static_cast<double>(StandingCapsuleShape.GetCapsuleHalfHeight() - CurrentCrouchedHalfHeight) };
 			bEncroached = MyWorld->OverlapBlockingTestByChannel(StandingLocation, FQuat::Identity, CollisionChannel, StandingCapsuleShape, CapsuleParams, ResponseParam);
 
-			if (bEncroached)
+			if (bEncroached && IsMovingOnGround())
 			{
-				if (IsMovingOnGround())
+				// Something might be just barely overhead, try moving down
+				// closer to the floor to avoid it.
+				static constexpr float MinFloorDist = KINDA_SMALL_NUMBER * 10.0f;
+				if (CurrentFloor.bBlockingHit && CurrentFloor.FloorDist > MinFloorDist)
 				{
-					// Something might be just barely overhead, try moving down
-					// closer to the floor to avoid it.
-					const float MinFloorDist = KINDA_SMALL_NUMBER * 10.0f;
-					if (CurrentFloor.bBlockingHit && CurrentFloor.FloorDist > MinFloorDist)
-					{
-						StandingLocation.Z -= CurrentFloor.FloorDist - MinFloorDist;
-						bEncroached = MyWorld->OverlapBlockingTestByChannel(StandingLocation, FQuat::Identity, CollisionChannel, StandingCapsuleShape, CapsuleParams, ResponseParam);
-					}
+					StandingLocation.Z -= static_cast<double>(CurrentFloor.FloorDist - MinFloorDist);
+					bEncroached = MyWorld->OverlapBlockingTestByChannel(StandingLocation, FQuat::Identity, CollisionChannel, StandingCapsuleShape, CapsuleParams, ResponseParam);
 				}
 			}
 
@@ -1694,10 +1632,9 @@ void UPBPlayerMovement::DoUnCrouchResize(float TargetTime, float DeltaTime, bool
 	// Don't smooth this change in mesh position
 	if ((bClientSimulation && CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy) || (IsNetMode(NM_ListenServer) && CharacterOwner->GetRemoteRole() == ROLE_AutonomousProxy))
 	{
-		FNetworkPredictionData_Client_Character* ClientData = GetPredictionData_Client_Character();
-		if (ClientData)
+		if (FNetworkPredictionData_Client_Character* ClientData = GetPredictionData_Client_Character())
 		{
-			ClientData->MeshTranslationOffset += FVector(0.0f, 0.0f, ScaledHalfHeightAdjust);
+			ClientData->MeshTranslationOffset += FVector{ 0., 0., static_cast<double>(ScaledHalfHeightAdjust) };
 			ClientData->OriginalMeshTranslationOffset = ClientData->MeshTranslationOffset;
 		}
 	}
@@ -1706,25 +1643,25 @@ void UPBPlayerMovement::DoUnCrouchResize(float TargetTime, float DeltaTime, bool
 bool UPBPlayerMovement::MoveUpdatedComponentImpl(const FVector& Delta, const FQuat& NewRotation, bool bSweep, FHitResult* OutHit, ETeleportType Teleport)
 {
 	FVector NewDelta = Delta;
-	if (bSweep && Teleport == ETeleportType::None && Delta != FVector::ZeroVector && IsFalling() && Delta.Z > 0.0f)
+	if (bSweep && Teleport == ETeleportType::None && Delta != FVector::ZeroVector && IsFalling() && Delta.Z > 0.)
 	{
-		const float HorizontalMovement = Delta.SizeSquared2D();
-		if (HorizontalMovement > KINDA_SMALL_NUMBER)
+		const double HorizontalMovement = Delta.SizeSquared2D();
+		if (HorizontalMovement > DOUBLE_KINDA_SMALL_NUMBER)
 		{
 			float PawnRadius, PawnHalfHeight;
 			CharacterOwner->GetCapsuleComponent()->GetScaledCapsuleSize(PawnRadius, PawnHalfHeight);
 			FVector LineTraceStart = UpdatedComponent->GetComponentLocation();
 			// Shrink our base height so we don't intersect any current floor, and find where we would end up if we moved
-			LineTraceStart.Z += -PawnHalfHeight + MAX_FLOOR_DIST + Delta.Z;
+			LineTraceStart.Z += -static_cast<double>(PawnHalfHeight) + static_cast<double>(MAX_FLOOR_DIST) + Delta.Z;
 			// Inflate our search radius so we can anticipate new surfaces
-			FVector DeltaDir = Delta.GetSafeNormal2D() * (PawnRadius + SWEEP_EDGE_REJECT_DISTANCE);
+			FVector DeltaDir = Delta.GetSafeNormal2D() * static_cast<double>(PawnRadius + SWEEP_EDGE_REJECT_DISTANCE);
 			FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(CapsuleHemisphereTrace), false, CharacterOwner);
 			FCollisionResponseParams ResponseParam;
 			InitCollisionParams(QueryParams, ResponseParam);
 			const ECollisionChannel CollisionChannel = UpdatedComponent->GetCollisionObjectType();
-			FHitResult Hit(1.f);
+			FHitResult Hit{ 1.f };
 			const bool bBlockingHit = GetWorld()->LineTraceSingleByChannel(Hit, LineTraceStart, LineTraceStart + DeltaDir, CollisionChannel, QueryParams, ResponseParam);
-			if (bBlockingHit && FMath::Abs(Hit.ImpactNormal.Z) <= VERTICAL_SLOPE_NORMAL_Z)
+			if (bBlockingHit && FMath::Abs(Hit.ImpactNormal.Z) <= PlayerMovementConstants::VerticalSlopeNormalZ)
 			{
 				// DrawDebugLine(GetWorld(), LineTraceStart, LineTraceStart + DeltaDir, FColor::Red, false, 10.0f, 0, 0.5f);
 				// UE_LOG(LogTemp, Log, TEXT("%f"), Hit.ImpactNormal.Z);
@@ -1742,8 +1679,8 @@ bool UPBPlayerMovement::CanAttemptJump() const
 	bool bCanAttemptJump = IsJumpAllowed();
 	if (IsMovingOnGround())
 	{
-		const float FloorZ = FVector(0.0f, 0.0f, 1.0f) | CurrentFloor.HitResult.ImpactNormal;
-		const float WalkableFloor = GetWalkableFloorZ();
+		const double FloorZ = FVector{ 0., 0., 1. } | CurrentFloor.HitResult.ImpactNormal;
+		const double WalkableFloor = GetWalkableFloorZ();
 		bCanAttemptJump &= (FloorZ >= WalkableFloor) || FMath::IsNearlyEqual(FloorZ, WalkableFloor);
 	}
 	else if (!IsFalling())
@@ -1757,14 +1694,15 @@ float UPBPlayerMovement::GetMaxSpeed() const
 {
 	if (bCheatFlying)
 	{
-		return (PBCharacter->IsSprinting() ? SprintSpeed : WalkSpeed) * 1.5f;
+		return (PBCharacter->IsSprinting() ? SprintSpeed : WalkSpeed) * 1.5;
 	}
-	float Speed;
+	
+	double Speed;
 	if (PBCharacter->IsSprinting())
 	{
 		if (IsCrouching() && bCrouchFrameTolerated)
 		{
-			Speed = MaxWalkSpeedCrouched * 1.7f;
+			Speed = static_cast<double>(MaxWalkSpeedCrouched) * 1.7;
 		}
 		else
 		{
@@ -1777,7 +1715,7 @@ float UPBPlayerMovement::GetMaxSpeed() const
 	}
 	else if (IsCrouching() && bCrouchFrameTolerated)
 	{
-		Speed = MaxWalkSpeedCrouched;
+		Speed = static_cast<double>(MaxWalkSpeedCrouched);
 	}
 	else
 	{
